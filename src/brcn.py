@@ -1,27 +1,19 @@
-
 from __future__ import print_function
-import cPickle as pickle
-import matplotlib.pyplot as plt
-import matplotlib as mpl
+from PIL import Image
 import h5py
 import numpy as np
 import theano
 import theano.tensor as tensor
 from theano import config
 from theano.tensor.nnet.conv import conv2d
-from theano.sandbox.rng_mrg import MRG_RandomStreams as RandomStreams
 from collections import OrderedDict
 
 
 """
 a random number generator used to initialize weights
 """
-SEED = 111
+SEED = 123
 rng = np.random.RandomState(SEED)
-np.random.seed(SEED)
-
-cmap = mpl.cm.gray_r
-norm = mpl.colors.Normalize(vmin=0)
 
 class ConvLayer(object):
     """
@@ -101,11 +93,11 @@ class BiRecConvNet(object):
 
         # forward net
         layers_f, params_f = self._init_layer(options['filter_shape'], options['rec_filter_size'])
-        proj_f, use_noise_f = self._build_model(x, options, layers_f, params_f, go_backwards=False)
+        proj_f = self._build_model(x, options, layers_f, params_f, go_backwards=False)
 
         # backward net
         layers_b, params_b = self._init_layer(options['filter_shape'], options['rec_filter_size'])
-        proj_b, use_noise_b = self._build_model(x, options, layers_b, params_b, go_backwards=True)
+        proj_b = self._build_model(x, options, layers_b, params_b, go_backwards=True)
 
         params = dict(prefix_p('f', params_f), **(prefix_p('b', params_b)))
 
@@ -119,11 +111,11 @@ class BiRecConvNet(object):
 
         for v in params.itervalues():
             weight_decay += (v ** 2).sum()
-        cost = ((y - proj) ** 2).sum() / (x.shape[1] * x.shape[0]) + 1e-4 * weight_decay
 
+        cost = ((y - proj) ** 2).sum() / (x.shape[1] * x.shape[0]) + 1e-4 * weight_decay
         f_x = theano.function([x], proj, name='f_proj')
 
-        return x, y, f_x, cost, params, use_noise_f, use_noise_b
+        return x, y, f_x, cost, params
 
     def _init_layer(self, filter_shape, rec_filter_size):
         """
@@ -152,47 +144,47 @@ class BiRecConvNet(object):
         return layers, params
 
     def _build_model(self, input, options, layers, params, go_backwards=False):
-        # Used for dropout.
-        trng = RandomStreams(SEED)
-        use_noise = theano.shared(numpy_floatX(0.), borrow=True)
 
-        def _step(x_, t_, r_, layer_):
+        def _step1(x_, t_, layer_):
             layer_ = str(layer_.data)
             v = layers['conv_' + layer_ + '_v'].conv(x_)
             t = layers['conv_' + layer_ + '_t'].conv(t_)
-            if layer_ != str(len(options['filter_shape']) - 1):
-                r = layers['conv_' + layer_ + '_r'].conv(r_)
-                h = tensor.nnet.relu(v + t + r + params['b_' + layer_].dimshuffle('x', 0, 'x', 'x'))
-            else:
-                h = v + t + params['b_' + layer_].dimshuffle('x', 0, 'x', 'x')
+            h = v + t
+
             return x_, h
 
+        def _step2(h, r_, layer_):
+            layer_ = str(layer_.data)
+            o = h + params['b_' + layer_].dimshuffle('x', 0, 'x', 'x')
+            if layer_ != str(len(options['filter_shape']) - 1):
+                r = layers['conv_' + layer_ + '_r'].conv(r_)
+                o = tensor.nnet.relu(o + r)
+            return o
+
         rval = input
+        if go_backwards:
+            rval = rval[::-1]
         for i in range(len(options['filter_shape'])):
-            shape = rval.shape[1:]
-            padding = options['filter_shape'][i][-1] - 1
-            rval, _ = theano.scan(_step, sequences=[rval],
-                        outputs_info=[tensor.alloc(numpy_floatX(0.), shape[0], shape[1], shape[2], shape[3]),
-                                      tensor.alloc(numpy_floatX(0.), shape[0], theano.shared(options['filter_shape'][i][0]), shape[2] - padding, shape[3] - padding)],
-                        non_sequences=[i],
-                        name='rnn_layers_' + str(i),
-                        go_backwards=go_backwards)
-
+            rval, _ = theano.scan(_step1, sequences=[rval],
+                                  outputs_info=[rval[0], None],
+                                  non_sequences=[i],
+                                  name='rnn_layers_k_' + str(i))
             rval = rval[1]
-
+            rval, _ = theano.scan(_step2, sequences=[rval],
+                                  outputs_info=[rval[-1]],
+                                  non_sequences=[i],
+                                  name='rnn_layers_q_' + str(i))
         proj = rval
-        if options['use_dropout']:
-            proj = dropout_layer(proj, use_noise, trng)
 
-        return proj, use_noise
+        return proj
 
-def pred_error(f_pred, data, target, options):
+def pred_error(f_pred, data, target, options, uidx, k):
     """
     Just compute the error
     f_pred: Theano fct computing the prediction
     target: usual groundtruth for that dataset.
     """
-    cut = 20
+    cut = 30
     diff = options['padding']
     x = data
     y = target[:, :, :, diff:-diff, diff:-diff]
@@ -203,23 +195,25 @@ def pred_error(f_pred, data, target, options):
     for i in range(0, numfrm, cut):
         _x = x[i:i+cut]
         _y = y[i:i+cut]
-        pred = np.around(f_pred(_x) * 255)
+        pred = f_pred(_x)
+        pred = np.around(pred * 255)
         _y = np.around(_y * 255)
 
         psnr_err += pnsr(pred, _y)
-        # if k is 1:
-        #     img = _x[0, 0, 0, :, :]
-        #     img_ = _y[0, 0, 0, :, :]
-        #     img__ = pred[0, 0, 0, :, :]
-        #     fig = plt.figure()
-        #     ax = fig.add_subplot(311)
-        #     ax.imshow(1-img_,cmap=cmap)
-        #     ax = fig.add_subplot(312)
-        #     ax.imshow(1-img__,cmap=cmap)
-        #     ax = fig.add_subplot(313)
-        #     ax.imshow(1-img,cmap=cmap)
-        #     plt.show()
+        if i is cut:
+            img_x = pred[0, 0, 0, :, :].astype(np.uint8).transpose()
+            img_y = _y[0, 0, 0, :, :].astype(np.uint8).transpose()
+            img_b = (_x[0, 0, 0, diff:-diff, diff:-diff] * 255).astype(np.uint8).transpose()
+
     psnr_err /= numfrm
+
+    im = Image.frombytes('L', img_b.shape, img_b)
+    im.save('../photo/' + k + '_bic.png', "PNG")
+    im = Image.frombytes('L', img_y.shape, img_y)
+    im.save('../photo/' + k + '_gth.png', "PNG")
+    im = Image.frombytes('L', img_x.shape, img_x)
+    im.save('../photo/' + k + '_' + str(uidx) + '_' + str(psnr_err) + '_prd.png', "PNG")
+
 
     return psnr_err
 
@@ -248,10 +242,6 @@ def get_minibatches_idx(n, minibatch_size, shuffle=False):
         minibatches.append(idx_list[minibatch_start:
                                     minibatch_start + minibatch_size])
         minibatch_start += minibatch_size
-    #
-    # if (minibatch_start != n):
-    #     # Make a minibatch out of what is left
-    #     minibatches.append(idx_list[minibatch_start:])
 
     return range(len(minibatches)), minibatches
 
@@ -269,7 +259,8 @@ def load_model(path):
     return npy.all()
 
 def pnsr(x, y):
-    z = np.mean((y - x) ** 2, axis=(2, 3, 4))
+    z = np.sum((y - x) ** 2, axis=(2, 3, 4))
+    z /= x.shape[2] * x.shape[3] * x.shape[4]
     rmse = np.sqrt(z)
     psnr = 20 * np.log10(255 / rmse)
     psnr = np.sum(psnr)
@@ -441,18 +432,14 @@ def train_brnn(
     lrate=1e-4,  # Learning rate for sgd (not used for adadelta and rmsprop)
     optimizer=rmsprop,  # sgd, adadelta and rmsprop available, sgd very hard to use,
                          # not recommanded (probably need momentum and decaying learning rate).
-    saveto='14_seq_41085_yuv_scala_4_frm10_blur_2',  # The best model will be saved there
-    model_path='14_seq_41085_yuv_scala_4_frm10_blur_2.npy',  # The model path
+    saveto='14_seq_41085_yuv_scala_4_frm10_blur_2_2',  # The best model will be saved there
+    model_path='14_seq_41085_yuv_scala_4_frm10_blur_2_2.npy',  # The model path
     validFreq=50,  # Compute the validation error after this number of update.
     saveFreq=200,  # Save the parameters after every saveFreq updates
     batch_size=64,  # The batch size during training and validateing.
-
     # Parameter for extra option
-    noise_std=0.,
     momentum = 0,
     lmodel=True,  # Path to a saved model we want to start from.
-    use_dropout=False  # if False slightly faster, but worst test error
-                      # This frequently need a bigger model.
 ):
     """
     The main body
@@ -466,8 +453,7 @@ def train_brnn(
     :param validFreq:
     :param saveFreq:
     :param batch_size:
-    :param noise_std:
-    :param use_dropout:
+    :param lmodel:
     :return:
     """
     options = locals().copy()
@@ -477,21 +463,19 @@ def train_brnn(
     train_path = '../data/14_seq_41085_yuv_scala_4_frm10_blur_2.mat'
     valid_path = OrderedDict()
 
-    valid_path['Dirty_Dancing'] = '../data/test/58_Dirty_Dancing.mp4_scale4_blur_2.mat'
-    valid_path['Turbine'] = '../data/test/350_Turbine.mp4_scale4_blur_2.mat'
-    valid_path['Star_Fan'] = '../data/test/300_Star_Fan.mp4_scale4_blur_2.mat'
-    valid_path['Flag'] = '../data/test/290_Flag.mp4_scale4_blur_2.mat'
-    valid_path['Treadmill'] = '../data/test/300_Treadmill.mp4_scale4_blur_2.mat'
+    valid_path['Dirty_Dancing'] = '../data/test/58_Dirty_Dancing_scale4_blur_2.mat'
+    valid_path['Turbine'] = '../data/test/350_Turbine_scale4_blur_2.mat'
+    valid_path['Star_Fan'] = '../data/test/300_Star_Fan_scale4_blur_2.mat'
+    valid_path['Flag'] = '../data/test/290_Flag_scale4_blur_2.mat'
+    valid_path['Treadmill'] = '../data/test/300_Treadmill_scale4_blur_2.mat'
 
     train_set_x, train_set_y = load_data(train_path)
-
-    train_set_x = train_set_x
-    train_set_y = train_set_y
 
     valid_set = OrderedDict()
     for k, v in valid_path.iteritems():
         valid_set_x, valid_set_y = load_data(v)
         valid_set[k] = [valid_set_x, valid_set_y]
+
 
     options['size_spa'] = 32
     options['stride_spa'] = 14
@@ -514,15 +498,14 @@ def train_brnn(
     print('... Building model')
 
     net = BiRecConvNet(options)
-    # use_noise is for dropout
+
     model = None
     if lmodel:
         model = load_model('../model/' + model_path)
-    (x, y, f_x, cost, params, use_noise_f, use_noise_b) = net.build_net(model)
+    (x, y, f_x, cost, params) = net.build_net(model)
 
     f_cost = theano.function([x, y], cost, name='f_cost')
-    lparams = list(params.values())
-    grads = tensor.grad(cost, wrt=lparams)
+    grads = tensor.grad(cost, wrt=list(params.values()))
     f_grad = theano.function([x, y], grads, name='f_grad')
 
     print('... Optimization')
@@ -543,25 +526,19 @@ def train_brnn(
         saveFreq = train_set_x.shape[0] // batch_size
 
     uidx = 0  # the number of update done
-    estop = False  # early stop
 
     try:
         for eidx in range(max_epochs):
-            n_samples = 0
 
             # Get new shuffled index for the training set.
             kf = get_minibatches_idx(train_set_x.shape[0], batch_size, shuffle=True)
 
             for train_index in kf[1]:
                 uidx += 1
-                use_noise_f.set_value(1.)
-                use_noise_b.set_value(1.)
                 # Select the random examples for this minibatch
                 diff = options['padding']
                 x = np.asarray([train_set_x[t, :, :, :, :] for t in train_index])
                 y = np.asarray([train_set_y[t, :, :, diff:-diff, diff:-diff] for t in train_index])
-
-                n_samples += x.shape[0]
 
                 x = theano.shared(value=x, borrow=True).dimshuffle(1, 0, 2, 3, 4).eval()
                 y = theano.shared(value=y, borrow=True).dimshuffle(1, 0, 2, 3, 4).eval()
@@ -583,21 +560,18 @@ def train_brnn(
                         params = best_p
                     else:
                         params = params
-                        p = dict()
-                        for k in params.iterkeys():
-                            p[k] = np.asarray(params[k].eval()).astype(config.floatX)
-                        np.save('../model/' + saveto, p)
-                    # pickle.dump(options, open('%s.pkl' % saveto, 'wb'), -1)
+                    p = dict()
+                    for k in params.iterkeys():
+                        p[k] = np.asarray(params[k].eval()).astype(config.floatX)
+                    np.save('../model/' + saveto, p)
                     print('Done')
 
                 if np.mod(uidx, validFreq) == 0:
-                    use_noise_f.set_value(0.)
-                    use_noise_b.set_value(0.)
 
                     valid_psnr = OrderedDict()
 
                     for k, v in valid_set.iteritems():
-                        valid_psnr[k] = pred_error(f_x, v[0], v[1], options)
+                        valid_psnr[k] = pred_error(f_x, v[0], v[1], options, uidx, k)
 
                     history_errs.append(valid_psnr.values() + [cost])
 
@@ -613,7 +587,7 @@ def train_brnn(
                         bad_counter += 1
                         if bad_counter > patience:
                             # lrate /= 10
-                            print('Downing learning rate for ', lrate, '\n')
+                            # print('Downing learning rate for ', lrate, '\n')
                             bad_counter = 0
 
 

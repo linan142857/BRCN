@@ -2,11 +2,12 @@ clear;clc;
 video_dir_path = '../videos';
 video_size = [176 144];
 dim_s = video_size(1) * video_size(2) * 3 / 2;
-size_spa=32;
+size_spa=44;
 stride_spa=14;
 stride_tem=8;
-size_tem=10;
-scale = 4;
+size_tem=22;
+scale = 2;
+blur_size = 2;
 
 filepaths = dir(fullfile(video_dir_path,'*.yuv'));
 
@@ -18,7 +19,9 @@ alf = 0;
 als = 0;
 h_s = fix((video_size(1) - size_spa) / stride_spa) + 1;
 w_s = fix((video_size(2) - size_spa) / stride_spa) + 1;
-H = lpfilter('gaussian', video_size(1), video_size(2), 30);
+H = fspecial('gaussian', [5 5], blur_size);
+
+% H = lpfilter('gaussian', video_size(1), video_size(2), blur_size);
 
 data = cell(1, length(filepaths));
 fprintf('... %d video sequences\n', length(filepaths));
@@ -39,8 +42,8 @@ for i = 1:length(filepaths)
 %         F = fft2(y);
 %         G = H.*F;
 %         g = abs(ifft2(G));
-%         g = imresize(imresize(g, 1/scale), video_size, 'bicubic');
-          g = imresize(imresize(y, 1/scale), video_size, 'bicubic');
+        g = imfilter(y, H, 'corr', 'replicate');
+        g = imresize(imresize(g, 1/scale, 'bicubic'), scale, 'bicubic');
         X(j,:,:) = g;
         fread(fid, [video_size(1), video_size(2) / 2], 'uint8');
     end
@@ -57,8 +60,7 @@ fprintf('...all cropped number: %d\n', h_s * w_s * als);
 
 hr_data = zeros([h_s * w_s * als, size_tem, 1, size_spa, size_spa]);
 lr_data = zeros([h_s * w_s * als, size_tem, 1, size_spa, size_spa]);
-% X = zeros([als, size_tem, 1, video_size]);
-% Y = zeros([als, size_tem, 1, video_size]);
+
 an = 1;
 cn = 1;
 for i = 1:length(data)
@@ -66,8 +68,7 @@ for i = 1:length(data)
     hr = data{i}.origin;
     seq = data{i}.seq;
     for q = 1:seq
-%         X(an, :, 1, :, :) = lr((q-1)*stride_tem+1:(q-1)*stride_tem+size_tem, :, :);
-%         Y(an, :, 1, :, :) = hr((q-1)*stride_tem+1:(q-1)*stride_tem+size_tem, :, :);
+
         an = an + 1;
         for j = 1:h_s
             for k = 1:w_s
@@ -87,9 +88,7 @@ for i = 1:length(data)
 end
 
 save(strcat('../data/', num2str(length(filepaths)), '_seq_', ...
-num2str(h_s * w_s * als), '_yuv_scala_', num2str(scale), '_frm', num2str(size_tem), '.mat'), ...
+num2str(h_s * w_s * als), '_yuv_scala_', num2str(scale), '_frm', num2str(size_tem), '_blur_', num2str(blur_size),'_24.mat'), ...
 'hr_data', 'lr_data', '-v7.3');
-% save(strcat('../data/', num2str(length(filepaths)), '_seq_', ...
-% num2str(als), '_yuv_scala_', num2str(scale), '_frm', num2str(size_tem), '_XY.mat'), ...
-% 'Y', 'X', '-v7.3');
+
 fprintf('...make done\n');
