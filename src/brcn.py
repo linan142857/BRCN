@@ -432,8 +432,8 @@ def train_brnn(
     lrate=1e-4,  # Learning rate for sgd (not used for adadelta and rmsprop)
     optimizer=rmsprop,  # sgd, adadelta and rmsprop available, sgd very hard to use,
                          # not recommanded (probably need momentum and decaying learning rate).
-    saveto='14_seq_41085_yuv_scala_4_frm10_blur_2_2',  # The best model will be saved there
-    model_path='14_seq_41085_yuv_scala_4_frm10_blur_2_2.npy',  # The model path
+    saveto='14_seq_41085_yuv_scala_4_frm10_blur_2',  # The best model will be saved there
+    model_path='14_seq_41085_yuv_scala_4_frm10_blur_2.npy',  # The model path
     validFreq=50,  # Compute the validation error after this number of update.
     saveFreq=200,  # Save the parameters after every saveFreq updates
     batch_size=64,  # The batch size during training and validateing.
