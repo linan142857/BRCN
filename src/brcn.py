@@ -594,6 +594,67 @@ def train_brnn(
     except KeyboardInterrupt:
         print("Training interupted\n")
 
+def test_brnn(
+    model_path='yuv_scala_4_frm10.npy',  # The model path
+):
+
+    options = locals().copy()
+
+
+    print('... Loading data')
+    test_path = OrderedDict()
+
+    test_path['Dirty_Dancing'] = '../data/test/58_Dirty_Dancing_scale_x4.mat'
+    test_path['Turbine'] = '../data/test/350_Turbine_scale_x4.mat'
+    test_path['Star_Fan'] = '../data/test/300_Star_Fan_scale_x4.mat'
+    test_path['Flag'] = '../data/test/290_Flag_scale_x4.mat'
+    test_path['Treadmill'] = '../data/test/300_Treadmill_scale_x4.mat'
+
+
+    test_set = OrderedDict()
+    for k, v in test_path.iteritems():
+        test_set_x, test_set_y = load_data(v)
+        test_set[k] = [test_set_x, test_set_y]
+
+    # for k, v in test_set.iteritems():
+    #     name = k
+    #     x = np.round(v[0] * 255);
+    #     y = np.round(v[1] * 255);
+    #     ps = pnsr(x, y)
+    #     print(name, ps / (x.shape[0] * x.shape[1]))
+
+#     options['size_spa'] = 32
+#     options['stride_spa'] = 14
+#     options['stride_tem'] = 8
+#     options['size_tem'] = 10
+#     options['scale'] = 4
+#     options['n_timestep'] = 10
+    options['filter_shape'] = [
+        [64, 1, 9, 9],
+        [32, 64, 1, 1],
+        [1, 32, 5, 5]
+    ]
+    options['rec_filter_size'] = [
+        [64, 64, 1, 1],
+        [32, 32, 1, 1]
+    ]
+
+    options['padding'] = np.sum([(i[-1] - 1) / 2 for i in options['filter_shape']])
+    print("model options", options)
+    print('... Building model')
+
+    net = BiRecConvNet(options)
+
+    model = load_model('../model/' + model_path)
+    (x, y, f_x, cost, params) = net.build_net(model)
+    print('... Test data')
+    test_psnr = OrderedDict()
+
+    for k, v in test_psnr.iteritems():
+        test_psnr[k] = pred_error(f_x, v[0], v[1], options)
+
+    print(' ...Test_PSNR: ', test_psnr)
+
 
 if __name__ == '__main__':
     train_brnn(max_epochs=30)
