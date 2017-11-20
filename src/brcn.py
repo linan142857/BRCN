@@ -650,7 +650,7 @@ def test_brnn(
     print('... Test data')
     test_psnr = OrderedDict()
 
-    for k, v in test_psnr.iteritems():
+    for k, v in test_set.iteritems():
         test_psnr[k] = pred_error(f_x, v[0], v[1], options)
 
     print(' ...Test_PSNR: ', test_psnr)
